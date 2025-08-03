@@ -17,6 +17,7 @@
     "build": "tsc",
     "test": "vitest run",
     "dev:test": "vitest",
+    "demo": "tsx demo/github-demo.ts",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
     "coverage": "vitest run --coverage",
