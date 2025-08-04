@@ -18,6 +18,7 @@
     "test": "vitest run",
     "dev:test": "vitest",
     "demo": "tsx demo/github-demo.ts",
+    "demo:retry": "tsx demo/network-retry-demo.ts",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
     "coverage": "vitest run --coverage",
@@ -52,8 +53,10 @@
   "homepage": "https://synthetism.ai",
   "license": "MIT",
   "dependencies": {
-    "@synet/circuit-breaker": "^0.0.1-dev.0",
+    "@synet/circuit-breaker": "^0.0.1-dev.2",
     "@synet/http": "^1.0.0",
+    "@synet/logger": "^1.1.0",
+    "@synet/retry": "^0.0.1-dev.1",
     "@synet/state": "^0.0.1-dev.0",
     "@synet/unit": "^1.0.6"
   }
