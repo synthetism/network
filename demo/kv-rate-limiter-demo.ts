@@ -11,8 +11,9 @@
  */
 
 import { Network } from '../src/index.js';
-import { RateLimiter } from '@synet/rate-limiter';
-
+import { RateLimiter, StorageBinding } from '@synet/rate-limiter';
+import { KeyValue, MemoryAdapter } from '@synet/kv';
+import { RedisAdapter } from "@synet/kv-redis"
 // Demo result type for tracking request outcomes
 interface DemoResult {
   id: number;
@@ -21,15 +22,63 @@ interface DemoResult {
   status?: number;
   error?: string;
 }
+class KVStorageBinding implements StorageBinding {
+  constructor(private kv: any) {}
+
+  async get<T>(key: string): Promise<T | null> {
+    const result = await this.kv.get(key);
+    return result || null;
+  }
+
+  async set<T>(key: string, value: T): Promise<void> {
+    await this.kv.set(key, value);
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return await this.kv.delete(key);
+  }
+
+  async exists(key: string): Promise<boolean> {
+    return await this.kv.exists(key);
+  }
+
+  async clear(): Promise<void> {
+    if (this.kv.clear) {
+      await this.kv.clear();
+    }
+  }
+}
 
 async function main() {
   console.log('🔗 SYNET Network Rate Limiter Demo\n');
+
+  const adapter = new MemoryAdapter();
+
+    const redisAdapter = new RedisAdapter({
+      host: 'localhost',
+      port: 6379,
+      keyPrefix: 'demo:',
+      defaultTTL: 30000, // 30 seconds default TTL
+      connectionTimeout: 5000,
+      maxRetriesPerRequest: 3
+    });
+  
+    const kv = KeyValue.create({ 
+      adapter: redisAdapter,
+      namespace: 'rate-limiter' 
+    });
+    
+    
+    // 2. Create StorageBinding from KV unit
+  console.log('2️⃣ Creating StorageBinding from KV unit...');
+  const storage = new KVStorageBinding(kv);
 
   // Create AsyncRateLimiter - 3 requests per 2 seconds
   const rateLimiter = RateLimiter.create({
     requests: 3,
     window: 2000,
-    burst: 1
+    burst: 1,
+    storage
   });
 
   console.log('📊 Rate Limiter Configuration:');
@@ -41,6 +90,11 @@ async function main() {
   const network = Network.create({
     baseUrl: 'https://httpbin.org',
     timeout: 5000,
+    retry: {
+       maxAttempts: 3,
+       baseDelay: 100,
+      jitter: true
+    },
     rateLimiter // Inject AsyncRateLimiter
   });
 

@@ -11,7 +11,7 @@ import {
 
 import { CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerStats } from '@synet/circuit-breaker';
 import { Retry, type RetryConfig, type RetryStats } from '@synet/retry';
-import { AsyncRateLimiter, type RateLimitContext } from '@synet/rate-limiter';
+import { RateLimiter, type RateLimitContext } from '@synet/rate-limiter';
 import { Http, type HttpRequest, type RequestResult } from '@synet/http';
 import type { Logger } from '@synet/logger';
 
@@ -26,7 +26,7 @@ interface NetworkConfig {
   retry?: Partial<RetryConfig>;
   
   // Optional rate limiter injection (AsyncRateLimiter only)
-  rateLimiter?: AsyncRateLimiter;
+  rateLimiter?: RateLimiter;
   
   // Optional logger
   logger?: Logger;
@@ -36,7 +36,7 @@ interface NetworkProps extends UnitProps {
   circuitBreakers: Map<string, CircuitBreaker>;  // URL -> CircuitBreaker mapping
   retryUnit: Retry;                              // Internal retry operations
   httpUnit: Http;                                // Internal HTTP operations
-  rateLimiter?: AsyncRateLimiter;                // Optional injected rate limiter
+  rateLimiter?: RateLimiter;                // Optional injected rate limiter
   logger?: Logger;                               // Optional logger for debugging
 }
 
@@ -163,7 +163,7 @@ class Network extends Unit<NetworkProps> {
         url: fullUrl
       };
       
-      const limitResult = await this.props.rateLimiter.checkLimit(context);
+      const limitResult = await this.props.rateLimiter.check(context);
       if (!limitResult.allowed) {
         const error = new Error(`[${this.dna.id}] Rate limit exceeded for ${url}. Retry after ${limitResult.retryAfter}ms`);
         this.props.logger?.warn(error.message);
@@ -262,7 +262,7 @@ class Network extends Unit<NetworkProps> {
 
   // Get rate limiter statistics (if available)
   async getRateLimitStats() {
-    return this.props.rateLimiter ? await this.props.rateLimiter.getStats() : null;
+    return this.props.rateLimiter ? await this.props.rateLimiter.stats() : null;
   }
 
   // Get network statistics (async)
