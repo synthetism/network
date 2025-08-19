@@ -146,9 +146,21 @@ class Network extends Unit<NetworkProps> {
     
     // Optional rate limiting check (only if injected)
     if (this.props.rateLimiter) {
+      // Create full URL for rate limiting context
+      let fullUrl: string;
+      try {
+        // Try as absolute URL first
+        fullUrl = new URL(url).href;
+      } catch {
+        // If relative, combine with base URL from HTTP unit
+        const httpConfig = this.props.httpUnit.toJSON();
+        const baseUrl = (httpConfig.baseUrl as string) || 'http://localhost';
+        fullUrl = new URL(url, baseUrl).href;
+      }
+      
       const context: RateLimitContext = { 
-        key: new URL(url).hostname,
-        url 
+        key: new URL(fullUrl).hostname,
+        url: fullUrl
       };
       
       const limitResult = await this.props.rateLimiter.checkLimit(context);
