@@ -53,11 +53,12 @@
   "homepage": "https://synthetism.ai",
   "license": "MIT",
   "dependencies": {
-    "@synet/circuit-breaker": "^0.0.1-dev.2",
-    "@synet/http": "^1.0.0",
+    "@synet/circuit-breaker": "^0.0.1-dev.4",
+    "@synet/http": "^1.0.1",
     "@synet/logger": "^1.1.0",
-    "@synet/retry": "^0.0.1-dev.1",
-    "@synet/state": "^0.0.1-dev.0",
-    "@synet/unit": "^1.0.6"
+    "@synet/rate-limiter": "^0.0.1-dev.2",
+    "@synet/retry": "^0.0.1-dev.2",
+    "@synet/state": "^0.0.1-dev.4",
+    "@synet/unit": "^1.1.0"
   }
 }

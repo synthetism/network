@@ -89,10 +89,10 @@ async function testCircuitBreakerInteraction() {
 
 // === COMPREHENSIVE STATISTICS ===
 
-function showComprehensiveStats() {
+async function showComprehensiveStats() {
   console.log('\n📈 COMPREHENSIVE NETWORK STATISTICS:');
   
-  const stats = network.getStats();
+  const stats = await network.getStats();
   console.log('Circuit Breakers:', stats.circuitBreakerCount);
   console.log('Retry Statistics:', {
     totalOperations: stats.retryStats.totalOperations,
@@ -140,7 +140,7 @@ async function runDemo() {
     await testRealApi();
     await testFailingEndpoint();
     await testCircuitBreakerInteraction();
-    showComprehensiveStats();
+    await showComprehensiveStats();
     demonstrateTeaching();
     
     console.log('\n🌊 NETWORK UNIT DEMO COMPLETE!');

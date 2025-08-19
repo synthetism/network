@@ -1,21 +1,43 @@
-import { Unit, type UnitProps, createUnitSchema, type TeachingContract } from '@synet/unit';
+import { 
+  Unit, 
+  type UnitProps, 
+  createUnitSchema, 
+  type TeachingContract,
+  type UnitCore,
+  Capabilities,
+  Schema,
+  Validator
+} from '@synet/unit';
+
 import { CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerStats } from '@synet/circuit-breaker';
 import { Retry, type RetryConfig, type RetryStats } from '@synet/retry';
+import { AsyncRateLimiter, type RateLimitContext } from '@synet/rate-limiter';
 import { Http, type HttpRequest, type RequestResult } from '@synet/http';
 import type { Logger } from '@synet/logger';
+
 interface NetworkConfig {
+  // HTTP config
+  baseUrl?: string;
+  timeout?: number;
+  defaultHeaders?: Record<string, string>;
+  
+  // Simple config for internal units
   circuitBreaker?: Partial<CircuitBreakerConfig>;
   retry?: Partial<RetryConfig>;
-  defaultHeaders?: Record<string, string>;
-  timeout?: number;
-  baseUrl?: string;
+  
+  // Optional rate limiter injection (AsyncRateLimiter only)
+  rateLimiter?: AsyncRateLimiter;
+  
+  // Optional logger
+  logger?: Logger;
 }
 
 interface NetworkProps extends UnitProps {
   circuitBreakers: Map<string, CircuitBreaker>;  // URL -> CircuitBreaker mapping
-  retryUnit: Retry;  // Dependency injection for retry operations
-  httpUnit: Http;  // Dependency injection for HTTP operations
-  logger?: Logger;  // Optional logger for debugging
+  retryUnit: Retry;                              // Internal retry operations
+  httpUnit: Http;                                // Internal HTTP operations
+  rateLimiter?: AsyncRateLimiter;                // Optional injected rate limiter
+  logger?: Logger;                               // Optional logger for debugging
 }
 
 interface RequestOptions {
@@ -29,6 +51,72 @@ class Network extends Unit<NetworkProps> {
   protected constructor(props: NetworkProps) {
     super(props);
   }
+
+  protected build(): UnitCore {
+    const capabilities = Capabilities.create(this.dna.id, {
+      // Core network capabilities
+      request: (...args: unknown[]) => this.request(args[0] as string, args[1] as RequestOptions),
+      getStats: async (...args: unknown[]) => await this.getStats()
+    });
+
+    const schema = Schema.create(this.dna.id, {
+      request: {
+        name: 'request',
+        description: 'Execute HTTP request with resilience features',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Request URL' },
+            options: { type: 'object', description: 'Request options (method, headers, body, timeout)' }
+          },
+          required: ['url']
+        },
+        response: {
+          type: 'object',
+          properties: {
+            response: { type: 'object', description: 'HTTP response' },
+            parsed: { type: 'object', description: 'Parsed response data' },
+            requestId: { type: 'string', description: 'Request identifier' },
+            timestamp: { type: 'string', description: 'Request timestamp' }
+          },
+          required: ['response', 'requestId', 'timestamp']
+        }
+      },
+      getStats: {
+        name: 'getStats',
+        description: 'Get network statistics and monitoring data',
+        parameters: {
+          type: 'object',
+          properties: {}
+        },
+        response: {
+          type: 'object',
+          properties: {
+            circuitBreakerCount: { type: 'number', description: 'Number of circuit breakers' },
+            hasRateLimiter: { type: 'boolean', description: 'Whether rate limiter is configured' },
+            circuits: { type: 'object', description: 'Circuit breaker statistics' },
+            retryStats: { type: 'object', description: 'Retry statistics' },
+            rateLimitStats: { type: 'object', description: 'Rate limiting statistics' }
+          },
+          required: ['circuitBreakerCount', 'hasRateLimiter']
+        }
+      }
+    });
+
+    const validator = Validator.create({
+      unitId: this.dna.id,
+      capabilities,
+      schema,
+      strictMode: false
+    });
+
+    return { capabilities, schema, validator };
+  }
+
+    // Consciousness Trinity Access
+  capabilities(): Capabilities { return this._unit.capabilities; }
+  schema(): Schema { return this._unit.schema; }
+  validator(): Validator { return this._unit.validator; }
 
   static create(config: NetworkConfig = {}): Network {
     // Create HTTP unit dependency
@@ -45,13 +133,34 @@ class Network extends Unit<NetworkProps> {
       dna: createUnitSchema({ id: 'network', version: '1.0.0' }),
       circuitBreakers: new Map(),
       httpUnit,
-      retryUnit
+      retryUnit,
+      rateLimiter: config.rateLimiter, // Optional injection
+      logger: config.logger
     };
     
     return new Network(props);
   }
 
   async request(url: string, options: RequestOptions = {}): Promise<RequestResult> {
+    this.props.logger?.debug(`[${this.dna.id}] Request to ${url}`);
+    
+    // Optional rate limiting check (only if injected)
+    if (this.props.rateLimiter) {
+      const context: RateLimitContext = { 
+        key: new URL(url).hostname,
+        url 
+      };
+      
+      const limitResult = await this.props.rateLimiter.checkLimit(context);
+      if (!limitResult.allowed) {
+        const error = new Error(`[${this.dna.id}] Rate limit exceeded for ${url}. Retry after ${limitResult.retryAfter}ms`);
+        this.props.logger?.warn(error.message);
+        throw error;
+      }
+      
+      this.props.logger?.debug(`[${this.dna.id}] Rate limit check passed. Remaining: ${limitResult.remaining}`);
+    }
+    
     // Get or create circuit breaker for this URL
     const circuit = this.getCircuitBreaker(url);
     
@@ -139,12 +248,21 @@ class Network extends Unit<NetworkProps> {
     return this.props.retryUnit.getStats();
   }
 
-  // Get network statistics
-  getStats() {
+  // Get rate limiter statistics (if available)
+  async getRateLimitStats() {
+    return this.props.rateLimiter ? await this.props.rateLimiter.getStats() : null;
+  }
+
+  // Get network statistics (async)
+  async getStats() {
+    const rateLimitStats = await this.getRateLimitStats();
+    
     return {
       circuitBreakerCount: this.props.circuitBreakers.size,
       circuits: this.getCircuitStats(),
       retryStats: this.getRetryStats(),
+      hasRateLimiter: !!this.props.rateLimiter,
+      rateLimitStats,
       httpUnit: this.props.httpUnit.whoami(),
       retryUnit: this.props.retryUnit.whoami()
     };
@@ -166,40 +284,36 @@ class Network extends Unit<NetworkProps> {
     return JSON.stringify(data, null, 2);
   }
 
-  teach(): TeachingContract {
+    teach(): TeachingContract {
     return {
       unitId: this.dna.id,
-      capabilities: {
-        request: (...args: unknown[]) => this.request.bind(this)(args[0] as string, args[1] as RequestOptions),
-        getCircuitStats: () => this.getCircuitStats.bind(this),
-        getRetryStats: () => this.getRetryStats.bind(this),
-        resetCircuits: () => this.resetCircuits.bind(this),
-        getStats: () => this.getStats.bind(this),
-        toJson: () => this.toJson.bind(this)
-      }
+      capabilities: this._unit.capabilities,
+      schema: this._unit.schema,
+      validator: this._unit.validator
     };
   }
 
   whoami(): string {
     const circuitCount = this.props.circuitBreakers.size;
     const retryStats = this.getRetryStats();
-    return `Network[${circuitCount} circuits, ${retryStats.totalRetries} retries] - Conscious HTTP + Circuit Protection + Intelligent Retry - v${this.dna.version}`;
+    const rateLimiterStatus = this.props.rateLimiter ? ' + Rate Limiter' : '';
+    
+    return `Network[${circuitCount} circuits, ${retryStats.totalRetries} retries${rateLimiterStatus}] - Conscious HTTP + Circuit Protection + Intelligent Retry - v${this.dna.version}`;
   }
 
   help(): string {
-    const stats = this.getStats();
+    
     return `
-Network v${this.dna.version} - 80/20 Conscious HTTP + Circuit Protection + Intelligent Retry Composition
+Network v${this.dna.version} - Conscious HTTP + Circuit Protection + Intelligent Retry + Optional Rate Limiting
 
-Current Circuits: ${stats.circuitBreakerCount}
-HTTP Unit: ${stats.httpUnit}
-Retry Unit: ${stats.retryUnit}
-Total Retries: ${stats.retryStats.totalRetries}
-Successful Operations: ${stats.retryStats.successfulOperations}
-Failed Operations: ${stats.retryStats.failedOperations}
+ONE METHOD TO RULE THEM ALL:
+• request(url, options?) - Conscious HTTP with automatic resilience
 
-🎯 ONE METHOD TO RULE THEM ALL:
-• request(url, options?) - Conscious HTTP with automatic circuit protection and intelligent retry
+Request Flow:
+1. Rate Limiting Check (if configured)
+2. Circuit Breaker Check (per URL)
+3. HTTP Request with Intelligent Retry
+4. Success/Failure Learning
 
 Request Options:
 • method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' (default: 'GET')
@@ -207,34 +321,39 @@ Request Options:
 • body: string | object (JSON stringified if object)
 • timeout: number (default: 30000ms)
 
-🧠 Conscious Features:
-• Automatic Circuit Protection per URL
-• Intelligent Retry with exponential backoff
-• Failure protection and recovery
-• Success/failure learning
-• Request blocking when circuits open
-• Complete monitoring and stats
+Configuration Examples:
+
+Basic Network:
+  const network = Network.create({
+    baseUrl: 'https://api.example.com'
+  });
+
+With Custom Retry/Circuit Breaker:
+  const network = Network.create({
+    baseUrl: 'https://api.example.com',
+    retry: { maxAttempts: 5, baseDelay: 2000 },
+    circuitBreaker: { failureThreshold: 3, timeout: 30000 }
+  });
+
+With Rate Limiting (Advanced):
+  const rateLimiter = AsyncRateLimiter.create({
+    requests: 100,
+    window: 60000,  // 1 minute
+    keyGenerator: (context) => context.key || 'default'
+  });
+  
+  const network = Network.create({
+    baseUrl: 'https://api.example.com',
+    rateLimiter
+  });
 
 🔧 Management:
 • getCircuitStats() - View all circuit states
-• getRetryStats() - View retry performance metrics
+• getRetryStats() - View retry performance
+• getRateLimitStats() - View rate limiting stats (async, if configured)
+• getStats() - Complete network statistics with rate limiting
 • resetCircuits() - Reset all circuit breakers
-• getStats() - Complete network statistics
 • toJson() - Serialize for persistence/logging
-
-Teaching:
-• Teaches all network capabilities for composition
-• Circuit Protection + Retry managed transparently
-• Failure protection automatic per URL
-
-Example:
-  const network = Network.create();
-  
-  // Automatic circuit protection + intelligent retry
-  const response = await network.request('https://api.example.com');
-  
-  // Circuit learns from failures, retry handles transient issues
-  console.log(network.getStats());
 `;
   }
 }

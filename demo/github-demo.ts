@@ -24,7 +24,7 @@ async function demo() {
     console.log(`• Updated: ${new Date(repo.updated_at).toLocaleDateString()}`);
     
     console.log('\n🧠 Network Intelligence:');
-    console.log(network.getStats());
+    console.log(await network.getStats());
     
   } catch (error) {
     console.error('❌ Request failed:', error.message);
