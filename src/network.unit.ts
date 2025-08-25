@@ -202,6 +202,7 @@ class Network extends Unit<NetworkProps> {
       let proxyConnection: ProxyConnection | undefined;
       let proxyFromPool: ProxyPoolConnection | undefined;
       
+      
       if (this.props.proxy) {
         try {
           proxyFromPool = await this.props.proxy.get(); // Get fresh proxy for this attempt
@@ -216,7 +217,7 @@ class Network extends Unit<NetworkProps> {
             protocol: proxyFromPool.protocol === 'https' ? 'http' : proxyFromPool.protocol as 'http' | 'socks5',
             country: proxyFromPool.country
           };
-          
+
           this.props.logger?.debug(`[${this.dna.id}] Using proxy: ${proxyConnection.host}:${proxyConnection.port}`);
         } catch (error) {
           this.props.logger?.warn(`[${this.dna.id}] Failed to get proxy, proceeding without: ${error instanceof Error ? error.message : String(error)}`);

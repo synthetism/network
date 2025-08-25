@@ -1,62 +1,58 @@
 /**
- * Network + Proxy Integration Demo
+ * Network + Proxy Integration Demo - ProxyMesh Version
  * 
  * Demonstrates the complete integration of:
  * - ProxyUnit for proxy pool management
  * - Network for conscious HTTP requests
- * - OculusSource for proxy provisioning
+ * - ProxyMeshSource for proxy provisioning
  * 
  * Tests IP change verification via httpbin.org/ip
  */
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { ProxyUnit, OculusSource, type OculusConfig } from '@synet/proxy';
+import { ProxyUnit, ProxyMeshSource } from '@synet/proxy';
 import { Network } from '../src/network.unit.js';
 
-
 async function main() {
-  console.log('🎯 Network + Proxy Integration Demo (Oculus)\n');
+  console.log('🎯 Network + Proxy Integration Demo (ProxyMesh)\n');
 
-  // Load Oculus credentials
-  const oculusConfigPath = path.join('private', 'oculus.json');
-  let oculusConfig: OculusConfig;
-
+  // Load ProxyMesh credentials
+  const proxymeshConfigPath = path.join('../proxy/private', 'proxymesh.json');
+  let proxymeshConfig: { login: string; password: string; host?: string; port?: number };
+  
   try {
-    oculusConfig = JSON.parse(readFileSync(oculusConfigPath, 'utf-8'));
-    console.log('✅ Loaded Oculus credentials');
+    proxymeshConfig = JSON.parse(readFileSync(proxymeshConfigPath, 'utf-8'));
+    console.log('✅ Loaded ProxyMesh credentials');
   } catch (error) {
-    console.error('❌ Failed to load Oculus credentials from private/oculus.json');
-    console.error('   Please ensure the file exists with apiToken and orderToken');
+    console.error('❌ Failed to load ProxyMesh credentials from ../proxy/private/proxymesh.json');
+    console.error('   Please ensure the file exists with login and password');
     return;
   }
 
-
-  // Create Oculus source
-  const oculusSource = new OculusSource({
-    apiToken: oculusConfig.apiToken,
-    orderToken: oculusConfig.orderToken,
-    planType: 'SHARED_DC',
-    country:'US',
-    whiteListIP: oculusConfig.whiteListIP || []
+  // Create ProxyMesh source
+  const proxymeshSource = new ProxyMeshSource({
+    login: proxymeshConfig.login,
+    password: proxymeshConfig.password,
+    host: proxymeshConfig.host || 'us-ca.proxymesh.com',
+    port: proxymeshConfig.port || 31280
   });
 
-  console.log('🔄 Creating proxy unit with Oculus source...');
+  console.log('🔄 Creating proxy unit with ProxyMesh source...');
   
   // Create proxy unit
   const proxyUnit = ProxyUnit.create({
-    sources: [oculusSource]
+    sources: [proxymeshSource]
   });
 
-  
+  console.log('⚡ Initializing proxy pool...');
 
   // Initialize proxy pool
-  console.log('⚡ Initializing proxy pool...');
   try {
     await proxyUnit.init();
-    console.log('✅ Proxy pool initialized');
     
     const stats = proxyUnit.getStats();
+    console.log('✅ Proxy pool initialized');
     console.log(`   Pool size: ${stats.currentSize}/${stats.poolSize}`);
     console.log(`   Available: ${stats.available}`);
   } catch (error) {
@@ -70,7 +66,6 @@ async function main() {
     baseUrl: 'https://httpbin.org',
     timeout: 15000,
     proxy: proxyUnit
-    // Note: Logger would need to be a proper Logger unit instance
   });
 
   console.log('📊 Network Unit:', network.whoami());
@@ -80,45 +75,34 @@ async function main() {
   try {
     // Test 1: Direct request (no proxy should be used in this case)
     console.log('🌐 Test 1: Direct request to get baseline IP...');
-    const directNetwork = Network.create({
-      baseUrl: 'https://httpbin.org',
-      timeout: 10000
-    });
-
-    const directResult = await directNetwork.request('/ip');
-    let directIP = 'unknown';
+    const directResult = await network.request('/ip');
     
+    let directIP = 'unknown';
     if (directResult.response.ok) {
+      const parsed = directResult.parsed as { origin?: string };
+      directIP = parsed?.origin || 'unknown';
       console.log('✅ Direct request successful');
       console.log(`   Status: ${directResult.response.status}`);
       console.log(`   Duration: ${directResult.response.duration}ms`);
-      
-      const parsed = directResult.parsed as { origin?: string };
-      if (parsed?.origin) {
-        directIP = parsed.origin;
-        console.log(`   Direct IP: ${directIP}`);
-      }
+      console.log(`   Direct IP: ${directIP}`);
     } else {
       console.log('❌ Direct request failed');
+      console.log(`   Status: ${directResult.response.status}`);
+      console.log(`   Error: ${directResult.response.statusText}`);
     }
 
     console.log();
 
-    // Test 2: Request with proxy
+    // Test 2: Request with proxy integration (automatic proxy usage)
     console.log('🔗 Test 2: Request with proxy integration...');
+    const proxiedResult = await network.request('/ip');
     
-    const proxiedResult = await network.request('/ip', {
-      headers: {
-        'User-Agent': 'Synet/1.0.0'
-      }
-    });
-
     if (proxiedResult.response.ok) {
+      const parsed = proxiedResult.parsed as { origin?: string };
       console.log('✅ Proxied request successful');
       console.log(`   Status: ${proxiedResult.response.status}`);
       console.log(`   Duration: ${proxiedResult.response.duration}ms`);
       
-      const parsed = proxiedResult.parsed as { origin?: string };
       if (parsed?.origin) {
         const proxiedIP = parsed.origin;
         console.log(`   Proxied IP: ${proxiedIP}`);
@@ -142,8 +126,8 @@ async function main() {
 
     console.log();
 
-    // Test 3: Multiple requests to test proxy rotation
-    console.log('🔄 Test 3: Multiple requests to test proxy rotation...');
+    // Test 3: Multiple requests to test proxy behavior with ProxyMesh
+    console.log('🔄 Test 3: Multiple requests to test proxy behavior...');
     
     // Debug: Check proxy pool state before Test 3
     const beforeTest3Stats = proxyUnit.getStats();
@@ -151,10 +135,7 @@ async function main() {
     
     for (let i = 1; i <= 3; i++) {
       console.log(`\n📡 Request ${i}/3...`);
-
-      console.log('⏳ Waiting 5 seconds...');
-      await new Promise(resolve => setTimeout(resolve, 5000));
-   
+      
       // Debug: Check proxy state before each request
       const beforeStats = proxyUnit.getStats();
       console.log(`   📊 Before request: ${beforeStats.available}/${beforeStats.currentSize} available`);
@@ -176,30 +157,29 @@ async function main() {
 
     console.log();
 
-    // Display final statistics
+    // Final Statistics
     console.log('📊 Final Statistics:');
     
-    const proxyStats = proxyUnit.getStats();
+    const finalProxyStats = proxyUnit.getStats();
     console.log('   Proxy Pool:');
-    console.log(`     Size: ${proxyStats.currentSize}/${proxyStats.poolSize}`);
-    console.log(`     Available: ${proxyStats.available}`);
-    console.log(`     Initialized: ${proxyStats.initialized}`);
+    console.log(`     Size: ${finalProxyStats.currentSize}/${finalProxyStats.poolSize}`);
+    console.log(`     Available: ${finalProxyStats.available}`);
+    console.log(`     Initialized: ${finalProxyStats.initialized}`);
     
     const networkStats = await network.getStats();
     console.log('   Network:');
     console.log(`     Circuit Breakers: ${networkStats.circuitBreakerCount}`);
-    console.log(`     Has Proxy: ${networkStats.hasProxy}`);
+    console.log(`     Has Proxy: ${networkStats.hasRateLimiter}`);
     console.log(`     Total Retries: ${networkStats.retryStats.totalRetries}`);
 
   } catch (error) {
     console.error('💥 Demo failed:', error instanceof Error ? error.message : String(error));
   }
 
-  console.log();
-  console.log('🎉 Network + Proxy Integration Demo Complete!');
-  console.log();
+  console.log('\n🎉 Network + Proxy Integration Demo Complete!\n');
+
   console.log('Integration Features Demonstrated:');
-  console.log('✅ Proxy pool initialization with Oculus source');
+  console.log('✅ Proxy pool initialization with ProxyMesh source');
   console.log('✅ Network unit with injected proxy dependency');
   console.log('✅ Automatic proxy usage for HTTP requests');
   console.log('✅ IP change verification through proxy');
@@ -207,8 +187,9 @@ async function main() {
   console.log('✅ Error handling and graceful degradation');
 }
 
+// Run the demo
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch(console.error);
 }
 
-export { main as networkProxyDemo };
+export { main as networkProxyMeshDemo };
