@@ -11,9 +11,10 @@ import {
 
 import { CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerStats } from '@synet/circuit-breaker';
 import { Retry, type RetryConfig, type RetryStats } from '@synet/retry';
-import { RateLimiter, type RateLimitContext } from '@synet/rate-limiter';
-import { Http, type HttpRequest, type RequestResult } from '@synet/http';
+import type { RateLimiter, RateLimitContext } from '@synet/rate-limiter';
+import { Http, type HttpRequest, type RequestResult, type ProxyConnection } from '@synet/http';
 import type { Logger } from '@synet/logger';
+import type { ProxyUnit, ProxyConnection as ProxyPoolConnection } from '@synet/proxy';
 
 interface NetworkConfig {
   // HTTP config
@@ -28,6 +29,9 @@ interface NetworkConfig {
   // Optional rate limiter injection (AsyncRateLimiter only)
   rateLimiter?: RateLimiter;
   
+  // Optional proxy unit injection 
+  proxy?: ProxyUnit;
+  
   // Optional logger
   logger?: Logger;
 }
@@ -36,7 +40,8 @@ interface NetworkProps extends UnitProps {
   circuitBreakers: Map<string, CircuitBreaker>;  // URL -> CircuitBreaker mapping
   retryUnit: Retry;                              // Internal retry operations
   httpUnit: Http;                                // Internal HTTP operations
-  rateLimiter?: RateLimiter;                // Optional injected rate limiter
+  rateLimiter?: RateLimiter;                     // Optional injected rate limiter
+  proxy?: ProxyUnit;                             // Optional injected proxy unit
   logger?: Logger;                               // Optional logger for debugging
 }
 
@@ -135,6 +140,7 @@ class Network extends Unit<NetworkProps> {
       httpUnit,
       retryUnit,
       rateLimiter: config.rateLimiter, // Optional injection
+      proxy: config.proxy,             // Optional proxy injection
       logger: config.logger
     };
     
@@ -176,32 +182,86 @@ class Network extends Unit<NetworkProps> {
     // Get or create circuit breaker for this URL
     const circuit = this.getCircuitBreaker(url);
     
-    // Check circuit breaker - conscious failure protection
+    // Smart circuit breaker handling with proxy rotation
     if (!circuit.canProceed()) {
-      this.props.logger?.warn(`[${this.dna.id}] Circuit breaker OPEN for ${url} - requests blocked`);
-      throw new Error(`[${this.dna.id}] Circuit breaker OPEN for ${url} - requests blocked`);
+      this.props.logger?.warn(`[${this.dna.id}] Circuit breaker OPEN for ${url} - trying different proxy`);
+      
+      // If we have a proxy unit, try rotating to a different proxy
+      if (this.props.proxy) {
+        this.props.logger?.debug(`[${this.dna.id}] Circuit OPEN: Attempting proxy rotation for ${url}`);
+        // Continue with new proxy attempt - circuit breaker will reset on success
+      } else {
+        // No proxy available - circuit breaker blocks completely
+        throw new Error(`[${this.dna.id}] Circuit breaker OPEN for ${url} - requests blocked (no proxy rotation available)`);
+      }
     }
 
-    // Define the HTTP operation for retry
+    // Define the HTTP operation for retry with proper proxy rotation
     const httpOperation = async (): Promise<RequestResult> => {
+      // Get fresh proxy connection for each attempt (retry gets new proxy)
+      let proxyConnection: ProxyConnection | undefined;
+      let proxyFromPool: ProxyPoolConnection | undefined;
+      
+      if (this.props.proxy) {
+        try {
+          proxyFromPool = await this.props.proxy.get(); // Get fresh proxy for this attempt
+          
+          // Duck type conversion - same structure, compatible protocols
+          proxyConnection = {
+            id: proxyFromPool.id,
+            host: proxyFromPool.host,
+            port: proxyFromPool.port,
+            username: proxyFromPool.username,
+            password: proxyFromPool.password,
+            protocol: proxyFromPool.protocol === 'https' ? 'http' : proxyFromPool.protocol as 'http' | 'socks5',
+            country: proxyFromPool.country
+          };
+          
+          this.props.logger?.debug(`[${this.dna.id}] Using proxy: ${proxyConnection.host}:${proxyConnection.port}`);
+        } catch (error) {
+          this.props.logger?.warn(`[${this.dna.id}] Failed to get proxy, proceeding without: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
       const httpRequest: HttpRequest = {
         url,
         method: options.method || 'GET',
         headers: options.headers,
         body: options.body,
-        timeout: options.timeout
+        timeout: options.timeout,
+        proxy: proxyConnection
       };
       
-      const result = await this.props.httpUnit.request(httpRequest);
-      
-      if (result.isSuccess) {
-        return result.value;
+      try {
+        const result = await this.props.httpUnit.request(httpRequest);
+        
+        if (result.isSuccess) {
+          return result.value;
+        }
+        
+        // Application error (4xx, 5xx) - don't blame the proxy
+        throw new Error(`HTTP request failed: ${result.error}`);
+        
+      } catch (error) {
+        // Check if it's a proxy-related network error
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const isProxyError = errorMessage.includes('ECONNREFUSED') || 
+                           errorMessage.includes('ETIMEDOUT') || 
+                           errorMessage.includes('ENOTFOUND') ||
+                           errorMessage.includes('proxy') ||
+                           errorMessage.includes('ECONNRESET') ||
+                           errorMessage.includes('407') ||  // Proxy authentication required
+                           errorMessage.includes('Invalid Auth'); // Oculus auth error
+        
+        // Only mark proxy as failed for clear proxy/network issues
+        if (isProxyError && proxyFromPool && this.props.proxy) {
+          this.props.logger?.debug(`[${this.dna.id}] Proxy/auth error - marking proxy as failed: ${proxyConnection?.host}:${proxyConnection?.port}`);
+          await this.props.proxy.failed(proxyFromPool);
+        }
+        
+        throw error;
       }
-      
-      throw new Error(`HTTP request failed: ${result.error}`);
-    };
-
-    try {
+    };    try {
       // Use retry unit for intelligent retry logic
       const retryResult = await this.props.retryUnit.retry(httpOperation, {
         maxAttempts: 3,
@@ -268,6 +328,7 @@ class Network extends Unit<NetworkProps> {
   // Get network statistics (async)
   async getStats() {
     const rateLimitStats = await this.getRateLimitStats();
+    const proxyStats = this.props.proxy ? this.props.proxy.getStats() : null;
     
     return {
       circuitBreakerCount: this.props.circuitBreakers.size,
@@ -275,6 +336,8 @@ class Network extends Unit<NetworkProps> {
       retryStats: this.getRetryStats(),
       hasRateLimiter: !!this.props.rateLimiter,
       rateLimitStats,
+      hasProxy: !!this.props.proxy,
+      proxyStats,
       httpUnit: this.props.httpUnit.whoami(),
       retryUnit: this.props.retryUnit.whoami()
     };
@@ -309,8 +372,9 @@ class Network extends Unit<NetworkProps> {
     const circuitCount = this.props.circuitBreakers.size;
     const retryStats = this.getRetryStats();
     const rateLimiterStatus = this.props.rateLimiter ? ' + Rate Limiter' : '';
+    const proxyStatus = this.props.proxy ? ' + Proxy Pool' : '';
     
-    return `Network[${circuitCount} circuits, ${retryStats.totalRetries} retries${rateLimiterStatus}] - Conscious HTTP + Circuit Protection + Intelligent Retry - v${this.dna.version}`;
+    return `Network[${circuitCount} circuits, ${retryStats.totalRetries} retries${rateLimiterStatus}${proxyStatus}] - Conscious HTTP + Circuit Protection + Intelligent Retry - v${this.dna.version}`;
   }
 
   help(): string {
